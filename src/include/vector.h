@@ -3,6 +3,9 @@
 
 #include "global.h"
 
+#define MMATH_E 2.71828
+#define MMATH_PI 3.14159
+
 #define MSTRING_BUFFER_SIZE 1024
 #define MSTRING_BUFFER_STEP 32
 
@@ -17,9 +20,15 @@
 
 #define mlerp(a, b, t) ((1 - t) * b) + (t * a)
 
+#define msig(x) (1 / (1 + pow(MMATH_E, -x)))
+
+#define mtrap(m, n, d) (m + n) * d / 2
+
 #define mspan(vec) (vec->flags & MFLAG_SPAN)
 
 #define mcount(vec) (vec->length / mspan(vec))
+
+#define mback(vec, i) (mcount(vec) - i)
 
 #define mmutex(vec) ((vec->flags & MFLAG_MUTEX) >> 4)
 
@@ -27,6 +36,8 @@
 
 #define mvector_from(type, ...)\
 mvector_from_void((type[]){__VA_ARGS__}, sizeof((type[]){__VA_ARGS__}), sizeof(type))
+
+#define mvector_at(type, vec, index) (type*)&vec->data[index*mspan(vec)]
 
 #define mvector_cast(type_to, type_from, vec)\
 for (u_int32_t index = 0; index < vec->length; index += mspan(vec))\
@@ -82,7 +93,7 @@ typedef struct _mvector
     char flags;
 } mvector;
 
-mvector* mvector_create(u_int32_t capacity, mspan span);
+mvector* mvector_create(u_int32_t count, mspan span);
 void mvector_destroy(mvector* vec);
 
 void mvector_resize(mvector* vec, u_int32_t new_capacity);
@@ -92,16 +103,12 @@ mvector* mvector_from_void(void* initial, u_int32_t length, mspan span);
 
 mvector* mvector_from_cstr(const char* initial);
 const char* mvector_to_cstr(mvector* vec);
+void mvector_append_cstr(mvector* vec, const char* cstr);
 
-void mvector_set(mvector* vec, u_int32_t index, mvector* val);
-mvector* mvector_get(mvector* vec, u_int32_t index);
+void mvector_copy(mvector* vec_to, mvector* vec_from,
+    u_int32_t i, u_int32_t j, u_int32_t count);
 
-mvector* mvector_copy(mvector* vec_from);
-
-void mvector_push(mvector* vec, void* data_in, u_int32_t length);
-void mvector_pop(mvector* vec, void* data_out, u_int32_t length);
-
-void mvector_push_cstr(mvector* vec, const char* cstr);
+mvector* mvector_sub(mvector* vec_from, u_int32_t i, u_int32_t count);
 
 void mvector_check_freed();
 

@@ -3,10 +3,10 @@
 
 int mdynamic_size = 0;
 
-mvector* mvector_create(u_int32_t capacity, mspan span)
+mvector* mvector_create(u_int32_t max_count, mspan span)
 {
     mvector* vec = (mvector*) malloc(sizeof(mvector));
-    vec->capacity = capacity;
+    vec->capacity = max_count*span;
     vec->length = 0;
     vec->flags = span;
 
@@ -45,11 +45,16 @@ void mvector_set_length(mvector* vec, u_int32_t new_length)
    }
 }
 
-mvector* mvector_from_void(void* initial, u_int32_t length, mspan span)
+void mvector_set_count(mvector* vec, u_int32_t new_count)
 {
-    mvector* vec = mvector_create(length, span);
-    memcpy(vec->data, initial, length);
-    vec->length = length;
+    mvector_set_length(vec, new_count*mspan(vec));
+}
+
+mvector* mvector_from_void(void* initial, u_int32_t count, mspan span)
+{
+    mvector* vec = mvector_create(count, span);
+    memcpy(vec->data, initial, count*span);
+    vec->length = count*span;
     return vec;
 }
 
@@ -70,38 +75,34 @@ const char* mvector_to_cstr(mvector* vec)
     return vec->data;
 }
 
-void mvector_set(mvector* vec, u_int32_t index, mvector* val)
-{
-    memcpy(&vec->data[index*val->length], &val->data, val->length);
-}
-
-mvector* mvector_get(mvector* vec, u_int32_t index)
-{
-    return mvector_from_void(&vec->data[index*mspan(vec)], mspan(vec), mspan(vec));
-}
-
-mvector* mvector_copy(mvector* vec_from)
-{
-    return mvector_from_void((void*)vec_from->data, vec_from->length, mspan(vec_from));
-}
-
-void mvector_push(mvector* vec, void* data_in, u_int32_t length)
-{
+void mvector_append_cstr(mvector* vec, const char* cstr)
+{ 
     u_int32_t initial_length = vec->length;
-    mvector_set_length(vec, vec->length+length);
-    memcpy(&vec->data[initial_length], data_in, length);
+    mvector_set_length(vec, vec->length+strlen(cstr));
+    memcpy(&vec->data[initial_length], cstr, strlen(cstr));
 }
 
-void mvector_pop(mvector* vec, void* data_out, u_int32_t length)
+void mvector_copy(mvector* vec_to, mvector* vec_from,
+    u_int32_t i_to, u_int32_t i_from, u_int32_t count)
 {
-    mvector_set_length(vec, vec->length - length);
-    memcpy(&vec->data[vec->length], data_out, length);
+    massert(i_from + count <= mcount(vec_from));
+    massert(mspan(vec_to) == mspan(vec_from));
+
+    if (i_to + count > mcount(vec_to))
+    {
+        mvector_set_count(vec_to, i_to + count);
+    }
+
+    memcpy(&vec_to->data[i_to*mspan(vec_to)],
+        &vec_from->data[i_from*mspan(vec_from)], 
+        count*mspan(vec_to));
 }
 
-void mvector_push_cstr(mvector* vec, const char* cstr)
+mvector* mvector_sub(mvector* vec_from, u_int32_t i, u_int32_t count)
 {
-    mvector_push(vec, (void*)cstr, strlen(cstr));
+    return mvector_from_void(&vec_from->data[i], count, mspan(vec_from));
 }
+
 
 void mvector_check_freed()
 {
@@ -151,7 +152,7 @@ void mvector_print_to(mvector* vec, const char* format, ...)
 {\
     massert(mspan(vec) == sizeof(type));\
     str->length = 0;\
-    mvector_push_cstr(str, l_brace);\
+    mvector_append_cstr(str, l_brace);\
     u_int32_t j = 0;\
     mvector_each(type, vec, element)\
     {\
@@ -162,7 +163,7 @@ void mvector_print_to(mvector* vec, const char* format, ...)
         }\
         j++;\
     }\
-    mvector_push_cstr(str, r_brace);\
+    mvector_append_cstr(str, r_brace);\
 }
 
 mvector* mvector_stringifyf(mvector* vec, u_int32_t m)
@@ -181,10 +182,11 @@ mvector* mvector_stringifyi(mvector* vec, u_int32_t m)
 
 #undef _stringify
 
-static u_int32_t _getj(u_int32_t i, u_int32_t m, u_int32_t n, double bstep)
+static u_int32_t _getj(u_int32_t i, u_int32_t m, u_int32_t n, double bs)
 {
-    u_int32_t bi = (u_int32_t)floor(i / bstep + 0.5);
-    return i + (i - bi*bstep) * (n - 1);
+    u_int32_t bi = i / m;
+    printf("i=%u, bi=%u, %f\n", i, bi, (i - bi*bs)*(n - 1));
+    return i + (i - bi*bs) * (n - 1);
 }
 
 void mvector_transpose(mvector* matrix, u_int32_t m, u_int32_t n)
@@ -194,68 +196,57 @@ void mvector_transpose(mvector* matrix, u_int32_t m, u_int32_t n)
         return;
     }
 
-    double bstep = ((double)m*n - 1) / (n - 1);
+    double bs = ((double)m*n - 1) / (n - 1);
 
-    mvector* cache_a = mvector_create(mspan(matrix), mspan(matrix));
-    mvector* cache_b = mvector_create(mspan(matrix), mspan(matrix));
+    mvector* cache = mvector_create(1, mspan(matrix));
+
+    mvector* hits = mvector_create(mcount(matrix), sizeof(bool));
 
     u_int32_t i = 1;
-    u_int32_t ex = m*n-2;
 
-    while (ex > 0)
+    while (i < mcount(matrix))
     {
-        u_int32_t j = _getj(i, m, n, bstep);
-        ex--;
+        u_int32_t j = _getj(i, m, n, bs);
 
-        if (i != j && ex > 0)
+        while (*mvector_at(bool, hits, j) == false)
         {
-            memcpy(cache_a->data, &matrix->data[i*mspan(matrix)], mspan(matrix));
+            mvector_copy(cache, matrix, 0, j, 1);
+            mvector_copy(matrix, matrix, j, i, 1);
+            mvector_copy(matrix, cache, i, 0, 1);
 
-            while (i != j && ex > 0)
-            {
-                memcpy(cache_b->data, &matrix->data[j*mspan(matrix)], mspan(matrix));
-                memcpy(&matrix->data[j*mspan(matrix)], cache_a->data, mspan(matrix));
-                memcpy(cache_a->data, cache_b->data, mspan(matrix));
-                ex--;
-                
-                mvector_logff("%s", matrix, m*n);
+            *mvector_at(bool, hits, j) = true;
 
-                j = _getj(j, m, n, bstep);
-            }
-
-            memcpy(&matrix->data[i*mspan(matrix)], cache_a->data, mspan(matrix));
+            j = _getj(j, m, n, bs);
         }
 
         i++;
     }
 
-    mvector_destroy(cache_a);
-    mvector_destroy(cache_b);
+    mvector_destroy(cache);
 }
 
 mvector* mvector_bezierf(mvector* points, u_int32_t axes, float t)
 {
     massert(mspan(points) == sizeof(float));
 
-    u_int32_t cache_size = 0;
-    u_int32_t step = axes*mspan(points);
+    u_int32_t cache_count = 0;
 
-    for (u_int32_t i = points->length; i >= step*2; i -= step)
+    for (u_int32_t i = mcount(points); i >= 2; i--)
     {
-        cache_size += i;
+        cache_count += i;
     }
 
-    mvector* cache = mvector_create(cache_size, mspan(points));
-    mvector_push(cache, points->data, points->length);
+    mvector* cache = mvector_create(cache_count, mspan(points));
+    mvector_copy(cache, points, 0, 0, mcount(points));
 
     u_int32_t row_start = 0;
-    u_int32_t row_length = points->length;
+    u_int32_t row_count = mcount(points);
 
-    while (row_length >= step*2)
+    while (row_count >= 2)
     {
-        for(u_int32_t i = row_start; i < row_start+row_length; i += step)
+        for(u_int32_t i = row_start; i < row_start+row_count; i++)
         {
-            mvector* vec = mvector_get(cache, i);
+            mvector* vec = mvector_sub(cache, i, 1);
             mvector* last_vec = NULL;
 
             if (last_vec)
@@ -265,7 +256,7 @@ mvector* mvector_bezierf(mvector* points, u_int32_t axes, float t)
                     *a = mlerp(*a, *b, t);
                 }
 
-                mvector_push(cache, last_vec->data, last_vec->length);
+                mvector_copy(cache, last_vec, mcount(cache), 0, 1);
 
                 mvector_destroy(last_vec);
                 last_vec = NULL;
@@ -278,11 +269,11 @@ mvector* mvector_bezierf(mvector* points, u_int32_t axes, float t)
             }
         }
 
-        row_start += row_length;
-        row_length -= step;
+        row_start += row_count;
+        row_count--;
     }
 
-    mvector* result = mvector_get(cache, cache->length-step);
+    mvector* result = mvector_sub(cache, mcount(cache)-1, 1);
     mvector_destroy(cache);
 
     return result;
